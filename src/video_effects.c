@@ -35,7 +35,10 @@
 //   phosphor   Adds the part of the previous frames' afterglow that is brighter than the current
 //              frame, so the result is max(current, decayed previous).  The afterglow decays with
 //              time rather than per frame, and the last frame is redrawn while it fades out.
-//   scanlines  Modulates each game screen row by a brightness profile that is darkest between rows.
+//   scanlines  Modulates the output rows by a brightness profile that is darkest between lines.
+//   pixel grid Does the same for the output columns.  Both keep their line spacing close to
+//              LINE_MASK_PITCH output pixels by drawing more lines per game pixel as the output
+//              gets bigger, so they look like a CRT's lines rather than stripes when full screen.
 //   bloom      Adds a blurred, half-resolution copy of the bright parts of the frame.
 
 const char *const effectLevelNames[EffectLevel_MAX] = {
@@ -46,11 +49,13 @@ const char *const effectLevelNames[EffectLevel_MAX] = {
 };
 
 EffectLevel scanlinesLevel = EFFECT_OFF;
+EffectLevel pixelGridLevel = EFFECT_OFF;
 EffectLevel bloomLevel = EFFECT_OFF;
 EffectLevel phosphorLevel = EFFECT_OFF;
 
-// Darkness between rows, out of 256.
+// Darkness between lines, out of 256.
 static const unsigned int scanlinesStrengths[EffectLevel_MAX] = { 0, 64, 112, 160 };
+static const unsigned int pixelGridStrengths[EffectLevel_MAX] = { 0, 48, 88, 128 };
 // Brightness of the glow, out of 255.
 static const Uint8 bloomIntensities[EffectLevel_MAX] = { 0, 96, 160, 224 };
 // Brightness that the afterglow retains per PHOSPHOR_DECAY_PERIOD, out of 256.
@@ -65,16 +70,30 @@ enum
 	GLOW_BLUR_PASSES = 2,
 	PHOSPHOR_DECAY_PERIOD = 28,  // ms; about one frame of gameplay
 	PHOSPHOR_REFRESH_PERIOD = 33,  // ms; redraw interval while the afterglow fades on a still screen
+	LINE_MASK_PITCH_X2 = 5,  // desired output pixels between scanlines or grid lines, times two
 };
+
+typedef enum
+{
+	LINE_MASK_ROWS,
+	LINE_MASK_COLUMNS,
+} LineMaskOrientation;
+
+/** A one-pixel-thick texture that darkens the gaps between lines when stretched over the output. */
+typedef struct
+{
+	SDL_Texture *texture;
+	int size;
+	EffectLevel level;
+} LineMask;
 
 static SDL_Renderer *renderer = NULL;
 
 static SDL_Texture *phosphorTexture = NULL;
-static SDL_Texture *scanlinesTexture = NULL;
 static SDL_Texture *bloomTexture = NULL;
 
-static int scanlinesTextureHeight = 0;
-static EffectLevel scanlinesTextureLevel = EFFECT_OFF;
+static LineMask scanlinesMask = { NULL };
+static LineMask pixelGridMask = { NULL };
 
 // The last source frame, which is reused when redrawing.
 static Uint8 srcPixels[vga_height][vga_width];
@@ -118,8 +137,9 @@ static void destroyTexture(SDL_Texture **const texture)
 void deinitVideoEffects(void)
 {
 	destroyTexture(&phosphorTexture);
-	destroyTexture(&scanlinesTexture);
 	destroyTexture(&bloomTexture);
+	destroyTexture(&scanlinesMask.texture);
+	destroyTexture(&pixelGridMask.texture);
 
 	renderer = NULL;
 }
@@ -281,44 +301,63 @@ static void updateGlow(void)
 	SDL_UnlockTexture(bloomTexture);
 }
 
-/** Builds a one-pixel-wide texture that darkens the output rows between game screen rows. */
-static bool updateScanlines(const int height)
+/**
+ * Returns whether the line mask can be drawn over `size` output pixels that show `gameSize` game
+ * pixels, (re)building its texture if needed.
+ */
+static bool updateLineMask(LineMask *const mask, const LineMaskOrientation orientation, const EffectLevel level, const unsigned int strength, const int size, const int gameSize)
 {
-	if (scanlinesTexture != NULL && scanlinesTextureHeight == height && scanlinesTextureLevel == scanlinesLevel)
+	// Lines need at least two output pixels each to be visible.
+	if (level == EFFECT_OFF || size < 2 * gameSize)
+		return false;
+
+	if (mask->texture != NULL && mask->size == size && mask->level == level)
 		return true;
 
-	destroyTexture(&scanlinesTexture);
+	destroyTexture(&mask->texture);
 
-	Uint32 *const rows = malloc(sizeof(*rows) * height);
-	if (rows == NULL)
+	Uint32 *const pixels = malloc(sizeof(*pixels) * size);
+	if (pixels == NULL)
 		return false;
 
-	scanlinesTexture = createTexture(SDL_TEXTUREACCESS_STATIC, 1, height, SDL_BLENDMODE_MOD);
-	if (scanlinesTexture == NULL)
+	const bool rows = orientation == LINE_MASK_ROWS;
+	mask->texture = createTexture(SDL_TEXTUREACCESS_STATIC, rows ? 1 : size, rows ? size : 1, SDL_BLENDMODE_MOD);
+	if (mask->texture == NULL)
 	{
-		free(rows);
+		free(pixels);
 		return false;
 	}
 
-	const unsigned int strength = scanlinesStrengths[scanlinesLevel];
+	// Draw a whole number of lines per game pixel so that the lines stay aligned with the game
+	// pixels, choosing the number that gets closest to the desired line spacing.
+	const int linesPerGamePixel = MAX(1, (2 * size + LINE_MASK_PITCH_X2 * gameSize / 2) / (LINE_MASK_PITCH_X2 * gameSize));
+	const int lineCount = linesPerGamePixel * gameSize;
 
-	for (int y = 0; y < height; ++y)
+	// Each line is bright for the first half of its period and dark for the second half.  Output
+	// pixels are shaded by how much of them is covered by dark halves, which keeps the lines even
+	// when the line spacing is not a whole number of pixels.  Positions are measured in units of
+	// 1/(2 * size) of a line so that a whole period is 2 * size units and half of one is size units.
+	const Sint64 period = 2 * (Sint64)size;
+	const Sint64 pixelWidth = 2 * (Sint64)lineCount;
+
+	Sint64 darkBefore = 0;  // dark units from the start of the mask up to the current pixel
+	for (int i = 0; i < size; ++i)
 	{
-		// Distance of the top of this output row from the center of its game screen row, from 0
-		// (center) to `height` (edge).  The darkness falls off quadratically towards the center.
-		const unsigned int phase = (unsigned int)y * vga_height % height;
-		const unsigned int distance = abs(2 * (int)phase - height);
-		const unsigned int darkness = strength * distance / height * distance / height;
+		const Sint64 end = (i + 1) * pixelWidth;
+		const Sint64 darkBeforeEnd = end / period * size + MAX(end % period - size, 0);
+
+		const unsigned int darkness = (unsigned int)(strength * (darkBeforeEnd - darkBefore) / pixelWidth);
+		darkBefore = darkBeforeEnd;
 
 		const Uint8 brightness = 255 - MIN(darkness, 255);
-		rows[y] = packRgb(brightness, brightness, brightness);
+		pixels[i] = packRgb(brightness, brightness, brightness);
 	}
 
-	SDL_UpdateTexture(scanlinesTexture, NULL, rows, sizeof(*rows));
-	free(rows);
+	SDL_UpdateTexture(mask->texture, NULL, pixels, rows ? sizeof(*pixels) : sizeof(*pixels) * size);
+	free(pixels);
 
-	scanlinesTextureHeight = height;
-	scanlinesTextureLevel = scanlinesLevel;
+	mask->size = size;
+	mask->level = level;
 	return true;
 }
 
@@ -354,8 +393,6 @@ void renderVideoEffects(SDL_Surface *const srcSurface, const SDL_Rect *const dst
 
 	const bool phosphor = phosphorLevel != EFFECT_OFF;
 	const bool bloom = bloomLevel != EFFECT_OFF;
-	// Scanlines need at least two output rows per game screen row to be visible.
-	const bool scanlines = scanlinesLevel != EFFECT_OFF && dstRect->h >= 2 * vga_height;
 
 	if ((phosphor || bloom) && srcSurface != NULL)
 		storeSrcFrame(srcSurface);
@@ -377,8 +414,11 @@ void renderVideoEffects(SDL_Surface *const srcSurface, const SDL_Rect *const dst
 		updateFrameRgb(NULL, 0);
 	}
 
-	if (scanlines && updateScanlines(dstRect->h))
-		SDL_RenderCopy(renderer, scanlinesTexture, NULL, dstRect);
+	if (updateLineMask(&scanlinesMask, LINE_MASK_ROWS, scanlinesLevel, scanlinesStrengths[scanlinesLevel], dstRect->h, vga_height))
+		SDL_RenderCopy(renderer, scanlinesMask.texture, NULL, dstRect);
+
+	if (updateLineMask(&pixelGridMask, LINE_MASK_COLUMNS, pixelGridLevel, pixelGridStrengths[pixelGridLevel], dstRect->w, vga_width))
+		SDL_RenderCopy(renderer, pixelGridMask.texture, NULL, dstRect);
 
 	if (bloom)
 	{

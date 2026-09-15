@@ -35,6 +35,7 @@ typedef enum
 extern const char *const effectLevelNames[EffectLevel_MAX];
 
 extern EffectLevel scanlinesLevel;
+extern EffectLevel pixelGridLevel;
 extern EffectLevel bloomLevel;
 extern EffectLevel phosphorLevel;
 

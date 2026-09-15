@@ -294,6 +294,8 @@ static void loadOpenTyrianConfig(void)
 		const char *effectLevel;
 		if (config_get_string_option(section, "scanlines", &effectLevel))
 			setEffectLevelByName(&scanlinesLevel, effectLevel);
+		if (config_get_string_option(section, "pixel_grid", &effectLevel))
+			setEffectLevelByName(&pixelGridLevel, effectLevel);
 		if (config_get_string_option(section, "bloom", &effectLevel))
 			setEffectLevelByName(&bloomLevel, effectLevel);
 		if (config_get_string_option(section, "phosphor", &effectLevel))
@@ -333,6 +335,7 @@ static void saveOpenTyrianConfig(void)
 	config_set_string_option(section, "scaling_mode", scaling_mode_names[scaling_mode]);
 
 	config_set_string_option(section, "scanlines", effectLevelNames[scanlinesLevel]);
+	config_set_string_option(section, "pixel_grid", effectLevelNames[pixelGridLevel]);
 	config_set_string_option(section, "bloom", effectLevelNames[bloomLevel]);
 	config_set_string_option(section, "phosphor", effectLevelNames[phosphorLevel]);
 

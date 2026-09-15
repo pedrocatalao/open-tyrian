@@ -125,7 +125,9 @@ void setupMenu(void)
 		MENU_ITEM_DISPLAY,
 		MENU_ITEM_SCALER,
 		MENU_ITEM_SCALING_MODE,
+		MENU_ITEM_EFFECTS,
 		MENU_ITEM_SCANLINES,
+		MENU_ITEM_PIXEL_GRID,
 		MENU_ITEM_BLOOM,
 		MENU_ITEM_PHOSPHOR,
 		MENU_ITEM_MUSIC_VOLUME,
@@ -137,6 +139,7 @@ void setupMenu(void)
 		MENU_NONE = 0,
 		MENU_SETUP,
 		MENU_GRAPHICS,
+		MENU_EFFECTS,
 		MENU_SOUND,
 	} MenuId;
 
@@ -152,7 +155,7 @@ void setupMenu(void)
 	typedef struct
 	{
 		const char *header;
-		const MenuItem items[8];
+		const MenuItem items[6];
 	} Menu;
 
 	static const Menu menus[] = {
@@ -173,7 +176,16 @@ void setupMenu(void)
 				{ MENU_ITEM_DISPLAY, "Display:", "Change the display mode.", getDisplayPickerItemsCount, getDisplayPickerItem },
 				{ MENU_ITEM_SCALER, "Scaler:", "Change the pixel art scaling algorithm.", getScalerPickerItemsCount, getScalerPickerItem },
 				{ MENU_ITEM_SCALING_MODE, "Scaling Mode:", "Change the scaling mode.", getScalingModePickerItemsCount, getScalingModePickerItem },
+				{ MENU_ITEM_EFFECTS, "Effects...", "Change the CRT display effects." },
+				{ MENU_ITEM_DONE, "Done", "Return to the previous menu." },
+				{ -1 }
+			},
+		},
+		[MENU_EFFECTS] = {
+			.header = "Effects",
+			.items = {
 				{ MENU_ITEM_SCANLINES, "Scanlines:", "Darken the gaps between lines like a CRT.", getEffectLevelPickerItemsCount, getEffectLevelPickerItem },
+				{ MENU_ITEM_PIXEL_GRID, "Pixel Grid:", "Darken the gaps between columns.", getEffectLevelPickerItemsCount, getEffectLevelPickerItem },
 				{ MENU_ITEM_BLOOM, "Bloom:", "Make bright colors glow.", getEffectLevelPickerItemsCount, getEffectLevelPickerItem },
 				{ MENU_ITEM_PHOSPHOR, "Phosphor Trail:", "Leave fading trails behind moving objects.", getEffectLevelPickerItemsCount, getEffectLevelPickerItem },
 				{ MENU_ITEM_DONE, "Done", "Return to the previous menu." },
@@ -286,6 +298,10 @@ void setupMenu(void)
 
 			case MENU_ITEM_SCANLINES:
 				drawFontHvShadow(VGAScreen, xMenuItemValue, y, effectLevelNames[scanlinesLevel], FONT_NORMAL, 15, -3 + (selected ? 2 : 0) + (disabled ? -4 : 0), false, 2);
+				break;
+
+			case MENU_ITEM_PIXEL_GRID:
+				drawFontHvShadow(VGAScreen, xMenuItemValue, y, effectLevelNames[pixelGridLevel], FONT_NORMAL, 15, -3 + (selected ? 2 : 0) + (disabled ? -4 : 0), false, 2);
 				break;
 
 			case MENU_ITEM_BLOOM:
@@ -414,6 +430,7 @@ void setupMenu(void)
 									case MENU_ITEM_SCALER:
 									case MENU_ITEM_SCALING_MODE:
 									case MENU_ITEM_SCANLINES:
+									case MENU_ITEM_PIXEL_GRID:
 									case MENU_ITEM_BLOOM:
 									case MENU_ITEM_PHOSPHOR:
 									{
@@ -566,6 +583,15 @@ void setupMenu(void)
 					selectedMenuItemIndexes[currentMenu] = 0;
 					break;
 				}
+				case MENU_ITEM_EFFECTS:
+				{
+					JE_playSampleNum(S_SELECT);
+
+					menuParents[MENU_EFFECTS] = currentMenu;
+					currentMenu = MENU_EFFECTS;
+					selectedMenuItemIndexes[currentMenu] = 0;
+					break;
+				}
 				case MENU_ITEM_SOUND:
 				{
 					JE_playSampleNum(S_SELECT);
@@ -627,6 +653,14 @@ void setupMenu(void)
 
 					currentPicker = selectedMenuItemId;
 					pickerSelectedIndex = scanlinesLevel;
+					break;
+				}
+				case MENU_ITEM_PIXEL_GRID:
+				{
+					JE_playSampleNum(S_CLICK);
+
+					currentPicker = selectedMenuItemId;
+					pickerSelectedIndex = pixelGridLevel;
 					break;
 				}
 				case MENU_ITEM_BLOOM:
@@ -799,6 +833,11 @@ void setupMenu(void)
 				case MENU_ITEM_SCANLINES:
 				{
 					scanlinesLevel = pickerSelectedIndex;
+					break;
+				}
+				case MENU_ITEM_PIXEL_GRID:
+				{
+					pixelGridLevel = pickerSelectedIndex;
 					break;
 				}
 				case MENU_ITEM_BLOOM:
