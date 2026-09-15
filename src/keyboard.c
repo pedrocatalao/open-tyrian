@@ -365,6 +365,9 @@ void handleSdlEvents(void)
 				break;
 		}
 	}
+
+	// Keep effects that change over time animating on screens that are not being redrawn.
+	video_redraw_effects();
 }
 
 bool hasInput(InputFlags flags)
